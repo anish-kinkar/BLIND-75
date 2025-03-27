@@ -1,0 +1,71 @@
+import pandas as pd
+import re
+
+# Load the Excel file
+file_source = "/content/data - sample.xlsx"  
+workbook = pd.ExcelFile(file_source)
+
+# Read attendance records and student data
+attendance_logs = pd.read_excel(workbook, sheet_name="Attendance_data")
+students_info = pd.read_excel(workbook, sheet_name="Student_data")
+
+# Convert date column to datetime format
+attendance_logs["attendance_date"] = pd.to_datetime(attendance_logs["attendance_date"])
+
+# Sort dataset for logical processing
+attendance_logs = attendance_logs.sort_values(by=["student_id", "attendance_date"])
+
+# Function to identify and extract long absence streaks
+def extract_absence_patterns(attendance_data):
+    absence_records = []
+
+    for stud_id, grouped_data in attendance_data.groupby("student_id"):
+        absent_days = grouped_data[grouped_data["status"] == "Absent"].reset_index(drop=True)
+        
+        streak_collection = []
+        ongoing_streak = [absent_days.iloc[0]] if not absent_days.empty else []
+
+        for idx in range(1, len(absent_days)):
+            if (absent_days.iloc[idx]["attendance_date"] - absent_days.iloc[idx - 1]["attendance_date"]).days == 1:
+                ongoing_streak.append(absent_days.iloc[idx])
+            else:
+                streak_collection.append(ongoing_streak)
+                ongoing_streak = [absent_days.iloc[idx]]
+
+        if ongoing_streak:
+            streak_collection.append(ongoing_streak)
+
+        long_absences = [streak for streak in streak_collection if len(streak) > 3]
+
+        if long_absences:
+            latest_streak = long_absences[-1]
+            absence_records.append({
+                "student_id": stud_id,
+                "absence_start": latest_streak[0]["attendance_date"],
+                "absence_end": latest_streak[-1]["attendance_date"],
+                "total_days_absent": len(latest_streak)
+            })
+
+    return pd.DataFrame(absence_records)
+
+# Retrieve absence data
+absence_summary = extract_absence_patterns(attendance_logs)
+
+# Merge student details
+merged_data = absence_summary.merge(students_info, on="student_id", how="left")
+
+# Alternative email validation function
+def validate_email_structure(email_text):
+    email_pattern = r'^[a-zA-Z_][\w]*@[a-zA-Z]+\.[a-zA-Z]{2,3}$'
+    return re.match(email_pattern, email_text) is not None
+
+# Apply email validation
+merged_data["valid_email"] = merged_data["parent_email"].apply(lambda x: x if validate_email_structure(str(x)) else None)
+
+# Generate notification messages
+merged_data["notification"] = merged_data.apply(lambda row: 
+    f"Dear Parent, your child {row['student_name']} was absent from {row['absence_start'].date()} to {row['absence_end'].date()} for {row['total_days_absent']} days. Please ensure their attendance improves."
+    if row["valid_email"] else None, axis=1)
+
+# Display final dataset
+print(merged_data)
